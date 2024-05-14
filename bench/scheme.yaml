@@ -1,0 +1,15 @@
+- name: Data
+  id: 10
+  fields:
+    - {name: f0, type: int32}
+    - {name: f1, type: int32}
+    - {name: f2, type: int32}
+    - {name: f3, type: int32}
+    - {name: f4, type: int32}
+    - {name: f5, type: double}
+    - {name: f6, type: double}
+    - {name: f7, type: double}
+    - {name: f8, type: double}
+    - {name: f9, type: double}
+    - {name: s0, type: byte32, options.type: string}
+    - {name: s1, type: string}

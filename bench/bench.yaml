@@ -1,0 +1,7 @@
+module:
+  #- module: target/debug/tll_csv
+  - module: target/release/tll_csv
+channel:
+  - null://
+  - csv://;basedir=/dev/shm/csv/;scheme=yaml://bench/scheme.yaml
+payload: yaml://bench/data.yaml;scheme=yaml://bench/scheme.yaml

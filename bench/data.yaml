@@ -1,0 +1,15 @@
+- name: Data
+  seq: 0
+  data:
+    f0: 0
+    f1: 10
+    f2: 20
+    f3: 30
+    f4: 40
+    f5: 50.123
+    f6: 60.123
+    f7: 70.123
+    f8: 80.123
+    f9: 90.123
+    s0: bytes
+    s1: offset-string
