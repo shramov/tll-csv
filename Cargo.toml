@@ -1,0 +1,14 @@
+[package]
+name = "tll-csv"
+version = "0.1.0"
+authors = ["Pavel Shramov <shramov@mexmat.net>"]
+edition = "2018"
+license = "MIT"
+
+[dependencies]
+tll = { path = "../tll-rs", version = ">= 0.0.0" }
+csv-core = ">= 0.1.6"
+chrono = ">= 0.4"
+
+[lib]
+crate-type = ["cdylib"]
