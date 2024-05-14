@@ -11,10 +11,12 @@ use tll::scheme::scheme::*;
 
 use chrono::{DateTime, TimeZone, Timelike, Utc};
 use csv_core::Writer;
+use itoa;
+use ryu;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Cursor, Write};
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -31,40 +33,27 @@ impl Entry {
         }
     }
 }
+#[derive(Default)]
+struct Buffers {
+    pub encode: Vec<u8>,
+    pub itoa: itoa::Buffer,
+    pub ryu: ryu::Buffer,
+}
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct CSVWriter {
     pub basedir: PathBuf,
+    pub encode: Buffers,
     pub writer: Writer,
     pub buffer: Vec<u8>,
     pub offset: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct CSV {
     base: Base,
     writer: CSVWriter,
     messages: HashMap<i32, Entry>,
-}
-
-fn convert_string<Ptr: tll::scheme::mem::OffsetPtrImpl>(data: &[u8]) -> Result<String> {
-    let size = Ptr::size(&data);
-    if size == 0 {
-        return Ok("".to_owned());
-    }
-    let offset = Ptr::offset(&data);
-    if data.mem_size() < offset || data.mem_size() < offset + size {
-        return Err(Error::from(format!(
-            "String field out of bounds: [{}, +{}] > {}",
-            offset,
-            size,
-            data.mem_size()
-        )));
-    }
-    match std::str::from_utf8(&data.as_mem()[offset..offset + size - 1]) {
-        Err(_) => Err(Error::from("Invalid UTF8 string")),
-        Ok(s) => Ok(s.into()),
-    }
 }
 
 fn time_suffix(res: TimeResolution) -> &'static str {
@@ -79,87 +68,45 @@ fn time_suffix(res: TimeResolution) -> &'static str {
     }
 }
 
-fn convert_datetime(dt: DateTime<Utc>) -> Result<String> {
+fn compose2<'a>(dest: &'a mut [u8], src0: &[u8], src1: &[u8]) -> &'a [u8] {
+    dest[..src0.len()].copy_from_slice(src0);
+    dest[src0.len()..src0.len() + src1.len()].copy_from_slice(src1);
+    &dest[..src0.len() + src1.len()]
+}
+
+fn convert_string<Ptr: tll::scheme::mem::OffsetPtrImpl>(data: &[u8]) -> Result<&[u8]> {
+    let size = Ptr::size(&data);
+    if size == 0 {
+        return Ok("".as_bytes());
+    }
+    let offset = Ptr::offset(&data);
+    if data.mem_size() < offset || data.mem_size() < offset + size {
+        return Err(Error::from(format!(
+            "String field out of bounds: [{}, +{}] > {}",
+            offset,
+            size,
+            data.mem_size()
+        )));
+    }
+
+    Ok(&data[offset..offset + size - 1])
+}
+
+fn convert_datetime(dt: DateTime<Utc>, buf: &mut [u8]) -> Result<&[u8]> {
     let ns = dt.nanosecond();
-    Ok(if ns == 0 {
-        dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    let r = if ns == 0 {
+        dt.format("%Y-%m-%dT%H:%M:%SZ")
     } else if ns % 1000000 == 0 {
-        dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+        dt.format("%Y-%m-%dT%H:%M:%S%.3fZ")
     } else if ns % 1000 == 0 {
-        dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+        dt.format("%Y-%m-%dT%H:%M:%S%.6fZ")
     } else {
-        dt.format("%Y-%m-%dT%H:%M:%S%.9fZ").to_string()
-    })
-}
-
-fn convert_integer<'a, T: Integer>(field: &Field<'a>, data: T) -> Result<String>
-where
-    i64: TryFrom<T>,
-{
-    match field.sub_type() {
-        SubType::None => Ok(data.to_string()),
-        SubType::Fixed(prec) => Ok(format!("{}.E-{}", data, prec)),
-        SubType::Duration(res) => Ok(format!("{}{}", data, time_suffix(res))),
-        SubType::TimePoint(res) => match res {
-            TimeResolution::Ns => convert_datetime(TimePoint::<T, Nano>::new_raw(data).as_datetime()?),
-            TimeResolution::Us => convert_datetime(TimePoint::<T, Micro>::new_raw(data).as_datetime()?),
-            TimeResolution::Ms => convert_datetime(TimePoint::<T, Milli>::new_raw(data).as_datetime()?),
-            TimeResolution::Second => convert_datetime(TimePoint::<T, Ratio1>::new_raw(data).as_datetime()?),
-            TimeResolution::Minute => convert_datetime(TimePoint::<T, RatioMinute>::new_raw(data).as_datetime()?),
-            TimeResolution::Hour => convert_datetime(TimePoint::<T, RatioHour>::new_raw(data).as_datetime()?),
-            TimeResolution::Day => convert_datetime(TimePoint::<T, RatioDay>::new_raw(data).as_datetime()?),
-        },
-        _ => Ok(data.to_string()),
-    }
-}
-
-fn convert_double<'a>(field: &Field<'a>, data: f64) -> Result<String> {
-    match field.sub_type() {
-        SubType::None => Ok(data.to_string()),
-        SubType::Duration(res) => Ok(format!("{}{}", data, time_suffix(res))),
-        SubType::TimePoint(res) => match res {
-            TimeResolution::Ns => convert_datetime(Utc.timestamp_nanos((data * 1.) as i64)),
-            TimeResolution::Us => convert_datetime(Utc.timestamp_nanos((data * 1000.) as i64)),
-            TimeResolution::Ms => convert_datetime(Utc.timestamp_nanos((data * 1000000.) as i64)),
-            TimeResolution::Second => convert_datetime(Utc.timestamp_nanos((data * 1000000000.) as i64)),
-            TimeResolution::Minute => convert_datetime(Utc.timestamp_nanos((data * 1000000000. / 60.) as i64)),
-            TimeResolution::Hour => convert_datetime(Utc.timestamp_nanos((data * 1000000000. / 3600.) as i64)),
-            TimeResolution::Day => convert_datetime(Utc.timestamp_nanos((data * 1000000000. / 86400.) as i64)),
-        },
-        _ => Ok(data.to_string()),
-    }
-}
-
-fn convert<'a>(field: Field<'a>, data: &[u8]) -> Result<String> {
-    match field.get_type() {
-        Type::Int8 => convert_integer(&field, data.mem_get_primitive::<i8>(0)),
-        Type::Int16 => convert_integer(&field, data.mem_get_primitive::<i16>(0)),
-        Type::Int32 => convert_integer(&field, data.mem_get_primitive::<i32>(0)),
-        Type::Int64 => convert_integer(&field, data.mem_get_primitive::<i64>(0)),
-        Type::UInt8 => convert_integer(&field, data.mem_get_primitive::<u8>(0)),
-        Type::UInt16 => convert_integer(&field, data.mem_get_primitive::<u16>(0)),
-        Type::UInt32 => convert_integer(&field, data.mem_get_primitive::<u32>(0)),
-        Type::UInt64 => convert_integer(&field, data.mem_get_primitive::<u64>(0)),
-        Type::Double => convert_double(&field, data.mem_get_primitive::<f64>(0)),
-        Type::Decimal128 => Ok(data.mem_get_primitive::<Decimal128>(0).to_string()),
-        Type::Bytes(size) => {
-            if field.sub_type_raw() == SubTypeRaw::ByteString {
-                match std::str::from_utf8(&data.mem_get_bytestring(0, size)) {
-                    Err(_) => Err(Error::from("Invalid UTF8 string")),
-                    Ok(s) => Ok(s.into()),
-                }
-            } else {
-                Err(Error::from("Non-string bytes are not supported"))
-            }
-        }
-        Type::Pointer { version, .. } => match version {
-            // Pointer is checked on open, it is string
-            PointerVersion::Default => convert_string::<tll::scheme::mem::OffsetPtrDefault>(data),
-            PointerVersion::LegacyShort => convert_string::<tll::scheme::mem::OffsetPtrLegacyShort>(data),
-            PointerVersion::LegacyLong => convert_string::<tll::scheme::mem::OffsetPtrLegacyLong>(data),
-        },
-        t => Err(Error::from(format!("Unsupported type: {:?}", t))),
-    }
+        dt.format("%Y-%m-%dT%H:%M:%S%.9fZ")
+    };
+    let mut cursor = Cursor::new(buf);
+    write!(cursor, "{}", r)?;
+    let size = cursor.position() as usize;
+    Ok(&cursor.into_inner()[..size])
 }
 
 impl CSVWriter {
@@ -205,14 +152,16 @@ impl CSVWriter {
         let mut nout;
         (_, _, nout) = self
             .writer
-            .field(msg.seq().to_string().as_bytes(), &mut self.buffer[self.offset..]);
+            .field(self.encode.itoa.format(msg.seq()).as_bytes(), &mut self.buffer[self.offset..]);
         self.offset += nout;
         for f in message.fields() {
             (_, nout) = self.writer.delimiter(&mut self.buffer[self.offset..]);
             self.offset += nout;
-            let string = convert(f, &msg.data()[f.offset()..])
+            let r = self
+                .encode
+                .convert(f, &msg.data()[f.offset()..])
                 .map_err(|e| Error::from(format!("Failed to format field {}: {}", f.name(), e)))?;
-            (_, _, nout) = self.writer.field(string.as_bytes(), &mut self.buffer[self.offset..]);
+            (_, _, nout) = self.writer.field(r, &mut self.buffer[self.offset..]);
             self.offset += nout;
         }
         (_, nout) = self.writer.terminator(&mut self.buffer[self.offset..]);
@@ -221,6 +170,87 @@ impl CSVWriter {
         self.offset = 0;
         entry.file.as_ref().unwrap().write_all(slice)?;
         Ok(())
+    }
+}
+
+impl Buffers {
+    fn convert_integer<'a, T: Integer + itoa::Integer>(&mut self, field: &Field<'a>, data: T) -> Result<&[u8]>
+    where
+        i64: TryFrom<T>,
+    {
+        let buf = &mut self.encode;
+        match field.sub_type() {
+            SubType::None => Ok(self.itoa.format(data).as_bytes()),
+            SubType::Fixed(prec) => {
+                let off = compose2(buf, self.itoa.format(data).as_bytes(), b".E-").len();
+                let r = self.itoa.format(prec).as_bytes();
+                buf[off..off + r.len()].copy_from_slice(r);
+                Ok(&buf[..off + r.len()])
+            }
+            SubType::Duration(res) => Ok(compose2(buf, self.itoa.format(data).as_bytes(), time_suffix(res).as_bytes())),
+            SubType::TimePoint(res) => match res {
+                TimeResolution::Ns => convert_datetime(TimePoint::<T, Nano>::new_raw(data).as_datetime()?, buf),
+                TimeResolution::Us => convert_datetime(TimePoint::<T, Micro>::new_raw(data).as_datetime()?, buf),
+                TimeResolution::Ms => convert_datetime(TimePoint::<T, Milli>::new_raw(data).as_datetime()?, buf),
+                TimeResolution::Second => convert_datetime(TimePoint::<T, Ratio1>::new_raw(data).as_datetime()?, buf),
+                TimeResolution::Minute => convert_datetime(TimePoint::<T, RatioMinute>::new_raw(data).as_datetime()?, buf),
+                TimeResolution::Hour => convert_datetime(TimePoint::<T, RatioHour>::new_raw(data).as_datetime()?, buf),
+                TimeResolution::Day => convert_datetime(TimePoint::<T, RatioDay>::new_raw(data).as_datetime()?, buf),
+            },
+            _ => Ok(self.itoa.format(data).as_bytes()),
+        }
+    }
+
+    fn convert_double<'a>(&mut self, field: &Field<'a>, data: f64) -> Result<&[u8]> {
+        let buf = &mut self.encode;
+        match field.sub_type() {
+            SubType::None => Ok(self.ryu.format(data).as_bytes()),
+            SubType::Duration(res) => Ok(compose2(buf, self.ryu.format(data).as_bytes(), time_suffix(res).as_bytes())),
+            SubType::TimePoint(res) => match res {
+                TimeResolution::Ns => convert_datetime(Utc.timestamp_nanos((data * 1.) as i64), buf),
+                TimeResolution::Us => convert_datetime(Utc.timestamp_nanos((data * 1000.) as i64), buf),
+                TimeResolution::Ms => convert_datetime(Utc.timestamp_nanos((data * 1000000.) as i64), buf),
+                TimeResolution::Second => convert_datetime(Utc.timestamp_nanos((data * 1000000000.) as i64), buf),
+                TimeResolution::Minute => convert_datetime(Utc.timestamp_nanos((data * 1000000000. / 60.) as i64), buf),
+                TimeResolution::Hour => convert_datetime(Utc.timestamp_nanos((data * 1000000000. / 3600.) as i64), buf),
+                TimeResolution::Day => convert_datetime(Utc.timestamp_nanos((data * 1000000000. / 86400.) as i64), buf),
+            },
+            _ => Ok(self.ryu.format(data).as_bytes()),
+        }
+    }
+
+    fn convert<'a, 'b>(&'b mut self, field: Field<'a>, data: &'b [u8]) -> Result<&'b [u8]> {
+        match field.get_type() {
+            Type::Int8 => self.convert_integer(&field, data.mem_get_primitive::<i8>(0)),
+            Type::Int16 => self.convert_integer(&field, data.mem_get_primitive::<i16>(0)),
+            Type::Int32 => self.convert_integer(&field, data.mem_get_primitive::<i32>(0)),
+            Type::Int64 => self.convert_integer(&field, data.mem_get_primitive::<i64>(0)),
+            Type::UInt8 => self.convert_integer(&field, data.mem_get_primitive::<u8>(0)),
+            Type::UInt16 => self.convert_integer(&field, data.mem_get_primitive::<u16>(0)),
+            Type::UInt32 => self.convert_integer(&field, data.mem_get_primitive::<u32>(0)),
+            Type::UInt64 => self.convert_integer(&field, data.mem_get_primitive::<u64>(0)),
+            Type::Double => self.convert_double(&field, data.mem_get_primitive::<f64>(0)),
+            Type::Decimal128 => {
+                let mut cursor = std::io::Cursor::new(&mut self.encode);
+                write!(cursor, "{}", data.mem_get_primitive::<Decimal128>(0))?;
+                let size = cursor.position() as usize;
+                Ok(&cursor.into_inner()[..size])
+            }
+            Type::Bytes(size) => {
+                if field.sub_type_raw() == SubTypeRaw::ByteString {
+                    Ok(&data[..data.mem_get_bytestring(0, size).len()])
+                } else {
+                    Err(Error::from("Non-string bytes are not supported"))
+                }
+            }
+            Type::Pointer { version, .. } => match version {
+                // Pointer is checked on open, it is string
+                PointerVersion::Default => convert_string::<tll::scheme::mem::OffsetPtrDefault>(data),
+                PointerVersion::LegacyShort => convert_string::<tll::scheme::mem::OffsetPtrLegacyShort>(data),
+                PointerVersion::LegacyLong => convert_string::<tll::scheme::mem::OffsetPtrLegacyLong>(data),
+            },
+            t => Err(Error::from(format!("Unsupported type: {:?}", t))),
+        }
     }
 }
 
@@ -262,6 +292,7 @@ impl ChannelImpl for CSV {
         ));
         self.writer.writer = Writer::new();
         self.writer.buffer.resize(64 * 1024, 0);
+        self.writer.encode.encode.resize(64 * 1024, 0);
 
         self.inner_mut().open(url)?;
         if let Some(scheme) = self.base().scheme_data.as_ref() {
