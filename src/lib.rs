@@ -9,14 +9,16 @@ use tll::mem::MemRead;
 use tll::scheme::chrono::*;
 use tll::scheme::scheme::*;
 
+use bytes::{BytesMut, BufMut};
 use chrono::{DateTime, TimeZone, Timelike, Utc};
 use csv_core::Writer;
 use itoa;
 use ryu;
 use std::collections::HashMap;
 use std::convert::TryFrom;
+use std::fmt::Write as FormatWrite;
 use std::fs::File;
-use std::io::{Cursor, Write};
+use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -35,7 +37,7 @@ impl Entry {
 }
 #[derive(Default)]
 struct Buffers {
-    pub encode: Vec<u8>,
+    pub encode: BytesMut,
     pub itoa: itoa::Buffer,
     pub ryu: ryu::Buffer,
 }
@@ -68,12 +70,6 @@ fn time_suffix(res: TimeResolution) -> &'static str {
     }
 }
 
-fn compose2<'a>(dest: &'a mut [u8], src0: &[u8], src1: &[u8]) -> &'a [u8] {
-    dest[..src0.len()].copy_from_slice(src0);
-    dest[src0.len()..src0.len() + src1.len()].copy_from_slice(src1);
-    &dest[..src0.len() + src1.len()]
-}
-
 fn convert_string<Ptr: tll::scheme::mem::OffsetPtrImpl>(data: &[u8]) -> Result<&[u8]> {
     let size = Ptr::size(&data);
     if size == 0 {
@@ -92,7 +88,7 @@ fn convert_string<Ptr: tll::scheme::mem::OffsetPtrImpl>(data: &[u8]) -> Result<&
     Ok(&data[offset..offset + size - 1])
 }
 
-fn convert_datetime(dt: DateTime<Utc>, buf: &mut [u8]) -> Result<&[u8]> {
+fn convert_datetime(dt: DateTime<Utc>, buf: &mut BytesMut) -> Result<&[u8]> {
     let ns = dt.nanosecond();
     let r = if ns == 0 {
         dt.format("%Y-%m-%dT%H:%M:%SZ")
@@ -103,10 +99,8 @@ fn convert_datetime(dt: DateTime<Utc>, buf: &mut [u8]) -> Result<&[u8]> {
     } else {
         dt.format("%Y-%m-%dT%H:%M:%S%.9fZ")
     };
-    let mut cursor = Cursor::new(buf);
-    write!(cursor, "{}", r)?;
-    let size = cursor.position() as usize;
-    Ok(&cursor.into_inner()[..size])
+    write!(buf, "{}", r)?;
+    Ok(&buf[..])
 }
 
 impl CSVWriter {
@@ -182,12 +176,16 @@ impl Buffers {
         match field.sub_type() {
             SubType::None => Ok(self.itoa.format(data).as_bytes()),
             SubType::Fixed(prec) => {
-                let off = compose2(buf, self.itoa.format(data).as_bytes(), b".E-").len();
-                let r = self.itoa.format(prec).as_bytes();
-                buf[off..off + r.len()].copy_from_slice(r);
-                Ok(&buf[..off + r.len()])
+                buf.put(self.itoa.format(data).as_bytes());
+                buf.put(&b".E-"[..]);
+                buf.put(self.itoa.format(prec).as_bytes());
+                Ok(&buf[..])
             }
-            SubType::Duration(res) => Ok(compose2(buf, self.itoa.format(data).as_bytes(), time_suffix(res).as_bytes())),
+            SubType::Duration(res) => {
+                buf.put(self.itoa.format(data).as_bytes());
+                buf.put(time_suffix(res).as_bytes());
+                Ok(&buf[..])
+            }
             SubType::TimePoint(res) => match res {
                 TimeResolution::Ns => convert_datetime(TimePoint::<T, Nano>::new_raw(data).as_datetime()?, buf),
                 TimeResolution::Us => convert_datetime(TimePoint::<T, Micro>::new_raw(data).as_datetime()?, buf),
@@ -205,7 +203,11 @@ impl Buffers {
         let buf = &mut self.encode;
         match field.sub_type() {
             SubType::None => Ok(self.ryu.format(data).as_bytes()),
-            SubType::Duration(res) => Ok(compose2(buf, self.ryu.format(data).as_bytes(), time_suffix(res).as_bytes())),
+            SubType::Duration(res) => {
+                buf.put(self.ryu.format(data).as_bytes());
+                buf.put(time_suffix(res).as_bytes());
+                Ok(&buf[..])
+            }
             SubType::TimePoint(res) => match res {
                 TimeResolution::Ns => convert_datetime(Utc.timestamp_nanos((data * 1.) as i64), buf),
                 TimeResolution::Us => convert_datetime(Utc.timestamp_nanos((data * 1000.) as i64), buf),
@@ -220,6 +222,7 @@ impl Buffers {
     }
 
     fn convert<'a, 'b>(&'b mut self, field: Field<'a>, data: &'b [u8]) -> Result<&'b [u8]> {
+        self.encode.clear();
         match field.get_type() {
             Type::Int8 => self.convert_integer(&field, data.mem_get_primitive::<i8>(0)),
             Type::Int16 => self.convert_integer(&field, data.mem_get_primitive::<i16>(0)),
@@ -231,10 +234,8 @@ impl Buffers {
             Type::UInt64 => self.convert_integer(&field, data.mem_get_primitive::<u64>(0)),
             Type::Double => self.convert_double(&field, data.mem_get_primitive::<f64>(0)),
             Type::Decimal128 => {
-                let mut cursor = std::io::Cursor::new(&mut self.encode);
-                write!(cursor, "{}", data.mem_get_primitive::<Decimal128>(0))?;
-                let size = cursor.position() as usize;
-                Ok(&cursor.into_inner()[..size])
+                write!(self.encode, "{}", data.mem_get_primitive::<Decimal128>(0))?;
+                Ok(&self.encode[..])
             }
             Type::Bytes(size) => {
                 if field.sub_type_raw() == SubTypeRaw::ByteString {
@@ -292,7 +293,7 @@ impl ChannelImpl for CSV {
         ));
         self.writer.writer = Writer::new();
         self.writer.buffer.resize(64 * 1024, 0);
-        self.writer.encode.encode.resize(64 * 1024, 0);
+        self.writer.encode.encode.reserve(256);
 
         self.inner_mut().open(url)?;
         if let Some(scheme) = self.base().scheme_data.as_ref() {
