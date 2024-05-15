@@ -4,4 +4,5 @@ module:
 channel:
   - null://
   - csv://;basedir=/dev/shm/csv/;scheme=yaml://bench/scheme.yaml
+  - csv://;basedir=/dev/shm/csv/;scheme=yaml://bench/scheme.yaml;buffered=true
 payload: yaml://bench/data.yaml;scheme=yaml://bench/scheme.yaml

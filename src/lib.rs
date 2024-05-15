@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt::Write as FormatWrite;
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -30,7 +30,7 @@ enum CSVString<'a> {
 #[derive(Debug)]
 struct Entry {
     pub message: DetachedMessage,
-    pub file: Option<File>,
+    pub file: Option<BufWriter<File>>,
 }
 
 impl Entry {
@@ -55,6 +55,7 @@ struct CSVWriter {
     pub writer: Writer,
     pub buffer: Vec<u8>,
     pub offset: usize,
+    pub flush: bool,
 }
 
 #[derive(Default)]
@@ -146,7 +147,7 @@ impl CSVWriter {
             )));
         }
         if entry.file.is_none() {
-            entry.file = Some(self.create_file(entry)?);
+            entry.file = Some(BufWriter::with_capacity(64 * 1024, self.create_file(entry)?));
         }
 
         let mut nout;
@@ -176,7 +177,10 @@ impl CSVWriter {
         self.offset += nout;
         let slice = &self.buffer[..self.offset];
         self.offset = 0;
-        entry.file.as_ref().unwrap().write_all(slice)?;
+        entry.file.as_mut().unwrap().write_all(slice)?;
+        if self.flush {
+            entry.file.as_mut().unwrap().flush()?;
+        }
         Ok(())
     }
 }
@@ -311,6 +315,7 @@ impl ChannelImpl for CSV {
             .get("basedir")
             .map(PathBuf::from)
             .ok_or("Missing mandatory 'basedir' parameter")?;
+        self.writer.flush = !url.get_typed("buffered", false)?;
         self.inner_mut().init(url, master, context)?;
         if self.base().scheme_url.is_none() {
             return Err(Error::from("Channel needs scheme"));
