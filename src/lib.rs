@@ -9,7 +9,7 @@ use tll::mem::MemRead;
 use tll::scheme::chrono::*;
 use tll::scheme::scheme::*;
 
-use bytes::{BytesMut, BufMut};
+use bytes::{BufMut, BytesMut};
 use chrono::{DateTime, TimeZone, Timelike, Utc};
 use csv_core::Writer;
 use itoa;
@@ -20,6 +20,12 @@ use std::fmt::Write as FormatWrite;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+
+#[derive(Debug)]
+enum CSVString<'a> {
+    Safe(&'a [u8]),
+    Unsafe(&'a [u8]),
+}
 
 #[derive(Debug)]
 struct Entry {
@@ -70,10 +76,10 @@ fn time_suffix(res: TimeResolution) -> &'static str {
     }
 }
 
-fn convert_string<Ptr: tll::scheme::mem::OffsetPtrImpl>(data: &[u8]) -> Result<&[u8]> {
+fn convert_string<'a, Ptr: tll::scheme::mem::OffsetPtrImpl>(data: &'a [u8]) -> Result<CSVString<'a>> {
     let size = Ptr::size(&data);
     if size == 0 {
-        return Ok("".as_bytes());
+        return Ok(CSVString::Safe("".as_bytes()));
     }
     let offset = Ptr::offset(&data);
     if data.mem_size() < offset || data.mem_size() < offset + size {
@@ -85,7 +91,7 @@ fn convert_string<Ptr: tll::scheme::mem::OffsetPtrImpl>(data: &[u8]) -> Result<&
         )));
     }
 
-    Ok(&data[offset..offset + size - 1])
+    Ok(CSVString::Unsafe(&data[offset..offset + size - 1]))
 }
 
 fn convert_datetime(dt: DateTime<Utc>, buf: &mut BytesMut) -> Result<&[u8]> {
@@ -151,11 +157,19 @@ impl CSVWriter {
         for f in message.fields() {
             (_, nout) = self.writer.delimiter(&mut self.buffer[self.offset..]);
             self.offset += nout;
-            let r = self
+            match self
                 .encode
                 .convert(f, &msg.data()[f.offset()..])
-                .map_err(|e| Error::from(format!("Failed to format field {}: {}", f.name(), e)))?;
-            (_, _, nout) = self.writer.field(r, &mut self.buffer[self.offset..]);
+                .map_err(|e| Error::from(format!("Failed to format field {}: {}", f.name(), e)))?
+            {
+                CSVString::Safe(r) => {
+                    self.buffer[self.offset..self.offset + r.len()].copy_from_slice(r);
+                    nout = r.len();
+                }
+                CSVString::Unsafe(r) => {
+                    (_, _, nout) = self.writer.field(r, &mut self.buffer[self.offset..]);
+                }
+            }
             self.offset += nout;
         }
         (_, nout) = self.writer.terminator(&mut self.buffer[self.offset..]);
@@ -221,25 +235,43 @@ impl Buffers {
         }
     }
 
-    fn convert<'a, 'b>(&'b mut self, field: Field<'a>, data: &'b [u8]) -> Result<&'b [u8]> {
+    fn convert<'a, 'b>(&'b mut self, field: Field<'a>, data: &'b [u8]) -> Result<CSVString<'b>> {
         self.encode.clear();
         match field.get_type() {
-            Type::Int8 => self.convert_integer(&field, data.mem_get_primitive::<i8>(0)),
-            Type::Int16 => self.convert_integer(&field, data.mem_get_primitive::<i16>(0)),
-            Type::Int32 => self.convert_integer(&field, data.mem_get_primitive::<i32>(0)),
-            Type::Int64 => self.convert_integer(&field, data.mem_get_primitive::<i64>(0)),
-            Type::UInt8 => self.convert_integer(&field, data.mem_get_primitive::<u8>(0)),
-            Type::UInt16 => self.convert_integer(&field, data.mem_get_primitive::<u16>(0)),
-            Type::UInt32 => self.convert_integer(&field, data.mem_get_primitive::<u32>(0)),
-            Type::UInt64 => self.convert_integer(&field, data.mem_get_primitive::<u64>(0)),
-            Type::Double => self.convert_double(&field, data.mem_get_primitive::<f64>(0)),
+            Type::Int8 => Ok(CSVString::Safe(
+                self.convert_integer(&field, data.mem_get_primitive::<i8>(0))?,
+            )),
+            Type::Int16 => Ok(CSVString::Safe(
+                self.convert_integer(&field, data.mem_get_primitive::<i16>(0))?,
+            )),
+            Type::Int32 => Ok(CSVString::Safe(
+                self.convert_integer(&field, data.mem_get_primitive::<i32>(0))?,
+            )),
+            Type::Int64 => Ok(CSVString::Safe(
+                self.convert_integer(&field, data.mem_get_primitive::<i64>(0))?,
+            )),
+            Type::UInt8 => Ok(CSVString::Safe(
+                self.convert_integer(&field, data.mem_get_primitive::<u8>(0))?,
+            )),
+            Type::UInt16 => Ok(CSVString::Safe(
+                self.convert_integer(&field, data.mem_get_primitive::<u16>(0))?,
+            )),
+            Type::UInt32 => Ok(CSVString::Safe(
+                self.convert_integer(&field, data.mem_get_primitive::<u32>(0))?,
+            )),
+            Type::UInt64 => Ok(CSVString::Safe(
+                self.convert_integer(&field, data.mem_get_primitive::<u64>(0))?,
+            )),
+            Type::Double => Ok(CSVString::Safe(
+                self.convert_double(&field, data.mem_get_primitive::<f64>(0))?,
+            )),
             Type::Decimal128 => {
                 write!(self.encode, "{}", data.mem_get_primitive::<Decimal128>(0))?;
-                Ok(&self.encode[..])
+                Ok(CSVString::Safe(&self.encode[..]))
             }
             Type::Bytes(size) => {
                 if field.sub_type_raw() == SubTypeRaw::ByteString {
-                    Ok(&data[..data.mem_get_bytestring(0, size).len()])
+                    Ok(CSVString::Unsafe(&data[..data.mem_get_bytestring(0, size).len()]))
                 } else {
                     Err(Error::from("Non-string bytes are not supported"))
                 }
