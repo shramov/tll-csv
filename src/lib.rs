@@ -5,7 +5,7 @@ use tll::channel::base::*;
 use tll::config::Config;
 use tll::decimal128::Decimal128;
 use tll::error::{Error, Result};
-use tll::mem::MemRead;
+use tll::mem::{MemOffset, MemRead};
 use tll::scheme::chrono::*;
 use tll::scheme::scheme::*;
 
@@ -77,7 +77,7 @@ fn time_suffix(res: TimeResolution) -> &'static str {
     }
 }
 
-fn convert_string<'a, Ptr: tll::scheme::mem::OffsetPtrImpl>(data: &'a [u8]) -> Result<CSVString<'a>> {
+fn convert_string<'a, Ptr: tll::scheme::mem::OffsetPtrImpl, Buf: MemRead>(data: &'a Buf) -> Result<CSVString<'a>> {
     let size = Ptr::size(&data);
     if size == 0 {
         return Ok(CSVString::Safe("".as_bytes()));
@@ -92,7 +92,7 @@ fn convert_string<'a, Ptr: tll::scheme::mem::OffsetPtrImpl>(data: &'a [u8]) -> R
         )));
     }
 
-    Ok(CSVString::Unsafe(&data[offset..offset + size - 1]))
+    Ok(CSVString::Unsafe(&data.as_mem()[offset..offset + size - 1]))
 }
 
 fn convert_datetime(dt: DateTime<Utc>, buf: &mut BytesMut) -> Result<&[u8]> {
@@ -155,12 +155,13 @@ impl CSVWriter {
             .writer
             .field(self.encode.itoa.format(msg.seq()).as_bytes(), &mut self.buffer[self.offset..]);
         self.offset += nout;
+        let data = MemOffset::new(msg.data());
         for f in message.fields() {
             (_, nout) = self.writer.delimiter(&mut self.buffer[self.offset..]);
             self.offset += nout;
             match self
                 .encode
-                .convert(f, &msg.data()[f.offset()..])
+                .convert(f, &data.view(f.offset()))
                 .map_err(|e| Error::from(format!("Failed to format field {}: {}", f.name(), e)))?
             {
                 CSVString::Safe(r) => {
@@ -239,7 +240,7 @@ impl Buffers {
         }
     }
 
-    fn convert<'a, 'b>(&'b mut self, field: Field<'a>, data: &'b [u8]) -> Result<CSVString<'b>> {
+    fn convert<'a, Buf: MemRead>(&'a mut self, field: Field<'_>, data: &'a Buf) -> Result<CSVString<'a>> {
         self.encode.clear();
         match field.get_type() {
             Type::Int8 => Ok(CSVString::Safe(
@@ -275,16 +276,16 @@ impl Buffers {
             }
             Type::Bytes(size) => {
                 if field.sub_type_raw() == SubTypeRaw::ByteString {
-                    Ok(CSVString::Unsafe(&data[..data.mem_get_bytestring(0, size).len()]))
+                    Ok(CSVString::Unsafe(data.mem_get_bytestring(0, size)))
                 } else {
                     Err(Error::from("Non-string bytes are not supported"))
                 }
             }
             Type::Pointer { version, .. } => match version {
                 // Pointer is checked on open, it is string
-                PointerVersion::Default => convert_string::<tll::scheme::mem::OffsetPtrDefault>(data),
-                PointerVersion::LegacyShort => convert_string::<tll::scheme::mem::OffsetPtrLegacyShort>(data),
-                PointerVersion::LegacyLong => convert_string::<tll::scheme::mem::OffsetPtrLegacyLong>(data),
+                PointerVersion::Default => convert_string::<tll::scheme::mem::OffsetPtrDefault, Buf>(data),
+                PointerVersion::LegacyShort => convert_string::<tll::scheme::mem::OffsetPtrLegacyShort, Buf>(data),
+                PointerVersion::LegacyLong => convert_string::<tll::scheme::mem::OffsetPtrLegacyLong, Buf>(data),
             },
             t => Err(Error::from(format!("Unsupported type: {:?}", t))),
         }
