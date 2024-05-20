@@ -1,0 +1,19 @@
+Source: tll-csv
+Section: devel
+Priority: optional
+Maintainer: Pavel Shramov <shramov@mexmat.net>
+Build-Depends: debhelper (>= 12), dh-cargo, ca-certificates, cargo, rustc,
+  librust-csv-core-dev, librust-chrono-dev, librust-itoa-dev, librust-ryu-dev, librust-bytes-dev,
+  pkg-config, libtll-dev, libfmt-dev, python3-tll, python3-pytest
+Standards-Version: 4.5.0
+Vcs-Git: https://github.com/shramov/tll-csv
+
+Package: libtll-csv
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ${cargo:Depends}
+Recommends: ${cargo:Recommends}
+Suggests: ${cargo:Suggests}
+Provides: ${cargo:Provides}
+Pre-Depends: ${misc:Pre-Depends}
+Multi-Arch: same
+Description: CSV writer channel for TLL
