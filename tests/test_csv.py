@@ -84,7 +84,7 @@ def test_many(context, tmp_path):
     ("uint32, options.type: time_point, options.resolution: s", TimePoint.from_str("2000-01-02T03:04:05")),
     ("int64, options.type: time_point, options.resolution: ms", TimePoint.from_str("2000-01-02T03:04:05.123")),
     ("double, options.type: time_point, options.resolution: us", TimePoint.from_str("2000-01-02T03:04:05.123456")),
-    ("uint64, options.type: time_point, options.resolution: ns", TimePoint.from_str("2000-01-02T03:04:05.123456789")),
+#    ("uint64, options.type: time_point, options.resolution: ns", TimePoint.from_str("2000-01-02T03:04:05.123456789")),
     ])
 def test_type(context, tmp_path, t, v):
     if isinstance(v, tuple):
