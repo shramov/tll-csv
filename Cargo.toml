@@ -6,7 +6,7 @@ edition = "2018"
 license = "MIT"
 
 [dependencies]
-tll = { path = "../tll-rs", version = ">= 0.0.0" }
+tll = { path = "tll-rs", version = ">= 0.0.0" }
 csv-core = ">= 0.1.6"
 chrono = ">= 0.4"
 itoa = ">= 1.0"
