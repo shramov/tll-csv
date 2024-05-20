@@ -312,11 +312,12 @@ impl ChannelImpl for CSV {
     }
 
     fn init(&mut self, url: &Config, master: Option<Channel>, context: &Context) -> Result<()> {
-        self.writer.basedir = url
+        let chain = self.config_chain(url);
+        self.writer.basedir = chain
             .get("basedir")
             .map(PathBuf::from)
             .ok_or("Missing mandatory 'basedir' parameter")?;
-        self.writer.flush = !url.get_typed("buffered", false)?;
+        self.writer.flush = !chain.get_bool("buffered", false)?;
         self.inner_mut().init(url, master, context)?;
         if self.base().scheme_url.is_none() {
             return Err(Error::from("Channel needs scheme"));
