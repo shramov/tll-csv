@@ -1,0 +1,27 @@
+#!/usr/bin/make -f
+
+LIBDIR := $(shell pwd)/debian/tmp/usr/lib/$(DEB_BUILD_GNU_TYPE)
+export CARGO_HOME = $(shell pwd)/debian/cargo_home/
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	-rm -rf target
+
+override_dh_auto_configure:
+	#cargo update --config net.offline=true --config source.dh-cargo-registry.directory=\"/usr/share/cargo/registry\"  --config source.crates-io.replace-with=\"dh-cargo-registry\"
+	cargo update
+
+override_dh_auto_build:
+	cargo build --verbose
+	cargo build --release --verbose
+
+override_dh_auto_test:
+	BUILD_DIR=target/debug pytest-3 -v tests
+	BUILD_DIR=target/release pytest-3 -v tests
+
+override_dh_auto_install:
+	mkdir -p $(LIBDIR)
+	install target/debug/libtll_csv.so $(LIBDIR)/libtll-csv-debug.so
+	install target/release/libtll_csv.so $(LIBDIR)/libtll-csv.so
