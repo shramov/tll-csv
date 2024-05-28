@@ -168,3 +168,34 @@ def test_pmap(context, tmp_path):
     r = list(csv.reader(open(tmp_path / "Data.csv")))
     assert r[0] == ['seq', 'm0', 'o0', 'o1', 'm1']
     assert r[1:] == [['0', '0', '20', '', '10'], ['1', '11', '', '21', '0']]
+
+@pytest.mark.parametrize("t,v", [
+    ("int8", 123),
+    ("int16", 12345),
+    ("int32", 123456789),
+    ("int64", 1234567890123),
+    ("uint8", 234),
+    ("uint16", 56789),
+    ("uint32", 0x8f000000),
+    ("uint64", 0x7f00000000000000),
+    ])
+def test_enum(context, tmp_path, t, v):
+    scheme = f'''yamls://
+- name: Data
+  id: 10
+  fields:
+    - {{ name: f0, type: {t}, options.type: enum, enum: {{ A: 0, B: {v} }} }}
+'''
+
+    c = context.Channel(f'csv://;basedir={tmp_path}', name='csv', scheme=scheme)
+    c.open()
+
+    c.post({'f0': 'A'}, name='Data', seq=0)
+    c.post({'f0': 'B'}, name='Data', seq=1)
+    c.close()
+
+    assert (tmp_path / "Data.csv").exists()
+
+    r = list(csv.reader(open(tmp_path / "Data.csv")))
+    assert r[0] == ['seq', 'f0']
+    assert r[1:] == [['0', 'A'], ['1', 'B']]

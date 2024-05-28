@@ -220,7 +220,9 @@ impl CSVWriter {
 }
 
 impl Buffers {
-    fn convert_integer<'a, T: Integer + itoa::Integer>(&mut self, field: &Field<'a>, data: T) -> Result<&[u8]>
+    // Result is either from self or from field so use minimal lifetime there
+    // https://doc.rust-lang.org/rust-by-example/scope/lifetime/lifetime_coercion.html
+    fn convert_integer<'a: 'b, 'b, T: Integer + itoa::Integer>(&'a mut self, field: &Field<'b>, data: T) -> Result<&'b [u8]>
     where
         i64: TryFrom<T>,
     {
@@ -246,6 +248,16 @@ impl Buffers {
                 TimeResolution::Minute => convert_datetime(TimePoint::<T, RatioMinute>::new_raw(data).as_datetime()?, buf),
                 TimeResolution::Hour => convert_datetime(TimePoint::<T, RatioHour>::new_raw(data).as_datetime()?, buf),
                 TimeResolution::Day => convert_datetime(TimePoint::<T, RatioDay>::new_raw(data).as_datetime()?, buf),
+            },
+            SubType::Enum(e) => {
+                if let Ok(i) = i64::try_from(data) {
+                    for v in e.values() {
+                        if v.value() == i {
+                            return Ok(v.name().as_bytes())
+                        }
+                    }
+                }
+                Ok(self.itoa.format(data).as_bytes())
             },
             _ => Ok(self.itoa.format(data).as_bytes()),
         }
@@ -273,7 +285,7 @@ impl Buffers {
         }
     }
 
-    fn convert<'a, Buf: MemRead>(&'a mut self, field: Field<'_>, data: &'a Buf) -> Result<CSVString<'a>> {
+    fn convert<'a: 'b, 'b, Buf: MemRead>(&'a mut self, field: Field<'b>, data: &'a Buf) -> Result<CSVString<'b>> {
         self.encode.clear();
         match field.get_type() {
             Type::Int8 => Ok(CSVString::Safe(
