@@ -110,7 +110,20 @@ fn convert_datetime(dt: DateTime<Utc>, buf: &mut BytesMut) -> Result<&[u8]> {
     Ok(&buf[..])
 }
 
+#[inline(always)]
+fn pmap_get<Buf: MemRead>(data: &Buf, index: i32) -> bool {
+    if index < 0 {
+        return true;
+    }
+    data.mem_get_primitive::<u8>(index as usize / 8) & (1 << (index & 0xf)) != 0
+}
+
 impl CSVWriter {
+    fn write_delimiter(&mut self) -> () {
+        let (_, nout) = self.writer.delimiter(&mut self.buffer[self.offset..]);
+        self.offset += nout;
+    }
+
     fn create_file(&mut self, entry: &Entry) -> Result<File> {
         let message = entry.message.message();
 
@@ -122,9 +135,12 @@ impl CSVWriter {
         let mut nout;
         (_, _, nout) = self.writer.field("seq".as_bytes(), &mut self.buffer[self.offset..]);
         self.offset += nout;
+        let pmap = message.pmap();
         for f in message.fields() {
-            (_, nout) = self.writer.delimiter(&mut self.buffer[self.offset..]);
-            self.offset += nout;
+            if pmap == Some(f) {
+                continue;
+            }
+            self.write_delimiter();
             (_, _, nout) = self.writer.field(f.name().as_bytes(), &mut self.buffer[self.offset..]);
             self.offset += nout;
         }
@@ -155,10 +171,27 @@ impl CSVWriter {
             .writer
             .field(self.encode.itoa.format(msg.seq()).as_bytes(), &mut self.buffer[self.offset..]);
         self.offset += nout;
+
         let data = MemOffset::new(msg.data());
+
+        let pmap = if let Some(f) = message.pmap() {
+            Some((f, data.view(f.offset())))
+        } else {
+            None
+        };
+
         for f in message.fields() {
-            (_, nout) = self.writer.delimiter(&mut self.buffer[self.offset..]);
-            self.offset += nout;
+            if let Some((pf, pd)) = pmap {
+                if pf == f {
+                    continue;
+                }
+                self.write_delimiter();
+                if !pmap_get(&pd, f.index()) {
+                    continue;
+                }
+            } else {
+                self.write_delimiter();
+            }
             match self
                 .encode
                 .convert(f, &data.view(f.offset()))

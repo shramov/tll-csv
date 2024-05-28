@@ -143,3 +143,28 @@ def test_bound_check(context, tmp_path):
 
     with pytest.raises(TLLError): c.post(b'\0' * 4, name='Data')
     with pytest.raises(TLLError): c.post(b'a' * 16, name='Data')
+
+def test_pmap(context, tmp_path):
+    scheme = '''yamls://
+- name: Data
+  id: 10
+  fields:
+    - { name: m0, type: int32 }
+    - { name: o0, type: int32, options.optional: yes }
+    - { name: pmap, type: uint32, options.pmap: yes }
+    - { name: o1, type: int32, options.optional: yes }
+    - { name: m1, type: int32 }
+'''
+
+    c = context.Channel(f'csv://;basedir={tmp_path}', name='csv', scheme=scheme)
+    c.open()
+
+    c.post({'m1': 10, 'o0': 20}, name='Data', seq=0)
+    c.post({'m0': 11, 'o1': 21}, name='Data', seq=1)
+    c.close()
+
+    assert (tmp_path / "Data.csv").exists()
+
+    r = list(csv.reader(open(tmp_path / "Data.csv")))
+    assert r[0] == ['seq', 'm0', 'o0', 'o1', 'm1']
+    assert r[1:] == [['0', '0', '20', '', '10'], ['1', '11', '', '21', '0']]
