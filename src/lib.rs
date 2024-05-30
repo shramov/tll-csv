@@ -220,9 +220,7 @@ impl CSVWriter {
 }
 
 impl Buffers {
-    // Result is either from self or from field so use minimal lifetime there
-    // https://doc.rust-lang.org/rust-by-example/scope/lifetime/lifetime_coercion.html
-    fn convert_integer<'a: 'b, 'b, T: Integer + itoa::Integer>(&'a mut self, field: &Field<'b>, data: T) -> Result<&'b [u8]>
+    fn convert_integer<'a, T: Integer + itoa::Integer>(&'a mut self, field: &Field<'a>, data: T) -> Result<&'a [u8]>
     where
         i64: TryFrom<T>,
     {
@@ -285,7 +283,7 @@ impl Buffers {
         }
     }
 
-    fn convert<'a: 'b, 'b, Buf: MemRead>(&'a mut self, field: Field<'b>, data: &'a Buf) -> Result<CSVString<'b>> {
+    fn convert<'a, Buf: MemRead>(&'a mut self, field: Field<'a>, data: &'a Buf) -> Result<CSVString<'a>> {
         self.encode.clear();
         match field.get_type() {
             Type::Int8 => Ok(CSVString::Safe(
