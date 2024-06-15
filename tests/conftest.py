@@ -11,6 +11,7 @@ import tll.logger
 tll.logger.init()
 
 from tll.channel import Context
+from tll.config import Config
 
 version = tuple([int(x) for x in pytest.__version__.split('.')[:2]])
 
@@ -22,6 +23,6 @@ if version < (3, 9):
 
 @pytest.fixture
 def context():
-    ctx = Context()
+    ctx = Context(Config.from_dict({'csv.buffered': 'no'}))
     ctx.load(os.path.join(os.environ.get("BUILD_DIR", "target/debug"), "tll_csv"))
     return ctx

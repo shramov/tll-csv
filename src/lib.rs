@@ -360,7 +360,7 @@ impl ChannelImpl for CSV {
             .get("basedir")
             .map(PathBuf::from)
             .ok_or("Missing mandatory 'basedir' parameter")?;
-        self.writer.flush = !chain.get_bool("buffered", false)?;
+        self.writer.flush = !chain.get_bool("buffered", true)?;
         self.inner_mut().init(url, master, context)?;
         if self.base().scheme_url.is_none() {
             return Err(Error::from("Channel needs scheme"));
