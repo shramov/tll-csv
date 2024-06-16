@@ -110,14 +110,6 @@ fn convert_datetime(dt: DateTime<Utc>, buf: &mut BytesMut) -> Result<&[u8]> {
     Ok(&buf[..])
 }
 
-#[inline(always)]
-fn pmap_get<Buf: MemRead>(data: &Buf, index: i32) -> bool {
-    if index < 0 {
-        return true;
-    }
-    data.mem_get_primitive::<u8>(index as usize / 8) & (1 << (index & 0xf)) != 0
-}
-
 impl CSVWriter {
     fn write_delimiter(&mut self) -> () {
         let (_, nout) = self.writer.delimiter(&mut self.buffer[self.offset..]);
@@ -175,18 +167,18 @@ impl CSVWriter {
         let data = MemOffset::new(msg.data());
 
         let pmap = if let Some(f) = message.pmap() {
-            Some((f, data.view(f.offset())))
+            Some((f, tll::scheme::mem::PMap::new(data.view(f.offset()))))
         } else {
             None
         };
 
         for f in message.fields() {
-            if let Some((pf, pd)) = pmap {
-                if pf == f {
+            if let Some((pf, pd)) = pmap.as_ref() {
+                if *pf == f {
                     continue;
                 }
                 self.write_delimiter();
-                if !pmap_get(&pd, f.index()) {
+                if !pd.get(f.index()) {
                     continue;
                 }
             } else {
